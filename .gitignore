@@ -4,3 +4,41 @@
 
 # LangGraph
 .langgraph_api/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.ruff_cache/
+.env
+
+# Node
+node_modules/
+.next/
+out/
+
+# macOS
+.DS_Store
+
+# Secrets and local config
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Build and test output
+*.tsbuildinfo
+coverage/
+htmlcov/
+.coverage
+dist/
+build/
+
+# Local data and logs
+*.log
+pgdata/
+
+# Personal study content. It is derived from course handouts and a textbook that are not ours to
+# publish, so it stays on this machine. The validator and the loader (app.seed) stay in the repo.
+content/ja/*.json
