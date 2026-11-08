@@ -183,6 +183,8 @@ class AnswerIn(BaseModel):
     question_kind: QuestionKind
     answer: str = ""
     skipped: bool = False
+    revealed: bool = False  # "Show answer": practice only, counts as not correct
+    self_grade: Literal["yes", "no"] | None = None  # grammar is open-ended, so the user grades it
     response_ms: int | None = None
     example_index: int | None = None
 
@@ -205,6 +207,18 @@ class AnswerOut(BaseModel):
     next_review_at: datetime | None
     lesson: LessonState | None = None
     can_accept: bool = False  # "My answer was right" is offered
+
+
+class RegradeIn(BaseModel):
+    correct: bool
+
+
+class RegradeOut(BaseModel):
+    correct: bool
+    stage_before: int | None
+    stage_after: int | None
+    next_review_at: datetime | None
+    lesson: LessonState | None = None
 
 
 class AcceptOut(BaseModel):

@@ -10,8 +10,9 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core import srs
+from app.core.answers import Verdict
 from app.models import Item, ReviewEvent, Workspace
-from app.schemas import AcceptOut, AnswerIn, AnswerOut, LessonState, Question
+from app.schemas import AcceptOut, AnswerIn, AnswerOut, LessonState, Question, RegradeOut
 from app.services import questions as q
 from app.services.workspaces import categories_filter, settings_of, stage_filter, start_of_day, types_filter
 
@@ -119,9 +120,7 @@ def practice_items_stmt(ws: Workspace, types, stages, source: str, now: datetime
     stmt = _filtered(select(Item).where(Item.workspace_id == ws.id), types, categories)
     cond = stage_filter(stages)
     if cond is not None:
-        stmt = stmt.where(cond)
-    else:
-        stmt = stmt.where(Item.stage.is_not(None))  # default: items you have started
+        stmt = stmt.where(cond)  # no stage picked means every item, started or not
     if source == "recent":
         stmt = stmt.where(Item.lesson_started_at >= now - timedelta(days=7))
     elif source in ("missed_7d", "most_missed"):
@@ -156,6 +155,68 @@ def practice_queue(db: Session, ws: Workspace, types, stages, source: str, direc
 
 # ---------- answers ----------
 
+def _snapshot(item: Item) -> dict:
+    def iso(t: datetime | None) -> str | None:
+        return t.isoformat() if t else None
+
+    return {"stage": item.stage, "passes": item.lesson_passes, "directions": item.lesson_directions,
+            "started": iso(item.lesson_started_at), "next": iso(item.next_review_at)}
+
+
+def _restore(item: Item, snap: dict) -> None:
+    item.stage, item.lesson_passes, item.lesson_directions = snap["stage"], snap["passes"], snap["directions"]
+    item.lesson_started_at = datetime.fromisoformat(snap["started"]) if snap["started"] else None
+    item.next_review_at = datetime.fromisoformat(snap["next"]) if snap["next"] else None
+
+
+def _transition(item: Item, session_type: str, direction: str, correct: bool, now: datetime,
+                intervals: dict[int, int]) -> LessonState | None:
+    """Apply one answer to the item's SRS state. Practice changes nothing."""
+    if session_type == "learn":
+        if item.stage is None:
+            item.stage, item.lesson_started_at = 0, now
+        if item.stage != 0:
+            raise Conflict("This item has already finished its lessons.")
+        o = srs.apply_lesson_answer(item.lesson_passes, item.lesson_directions, DIRS[direction], correct, now,
+                                    intervals)
+        item.lesson_passes, item.lesson_directions = o.passes, o.directions_done
+        if o.graduated:
+            item.stage, item.next_review_at = 1, o.next_review_at
+        return LessonState(
+            passes=o.passes,
+            directions_done=[n for n, f in DIRS.items() if srs.Direction(o.directions_done) & f],  # type: ignore[misc]
+            graduated=o.graduated,
+        )
+    if session_type == "review":
+        if item.stage is None or item.stage < 1:
+            raise Conflict("This item is not in reviews yet.")
+        o = srs.apply_review(item.stage, correct, now, intervals)
+        item.stage, item.next_review_at = o.stage_after, o.next_review_at
+    return None
+
+
+def regrade(db: Session, ws: Workspace, event_id: int, correct: bool, now: datetime) -> RegradeOut:
+    """The user changes their mind about a card they graded themselves, for example after seeing the answer.
+    The item goes back to how it was before that answer and the answer is applied again."""
+    ev = db.scalar(select(ReviewEvent).where(ReviewEvent.id == event_id, ReviewEvent.workspace_id == ws.id))
+    if ev is None:
+        raise LookupError("answer not found")
+    if ev.note not in ("self", "regraded") or ev.undo_state is None:
+        raise Conflict("Only an answer you graded yourself can be changed.")
+    later = db.scalar(select(func.count()).select_from(ReviewEvent).where(
+        ReviewEvent.item_id == ev.item_id, ReviewEvent.id > ev.id, ReviewEvent.outcome != "skipped"))
+    if later:
+        raise Conflict("This card has been answered again since, so the earlier answer can't be changed.")
+    item = db.get(Item, ev.item_id)
+    s = settings_of(ws)
+    _restore(item, ev.undo_state)
+    lesson = _transition(item, ev.session_type, ev.direction, correct, now, s.intervals_hours)
+    ev.outcome, ev.note, ev.stage_after = ("correct" if correct else "wrong"), "regraded", item.stage
+    db.commit()
+    return RegradeOut(correct=correct, stage_before=ev.stage_before, stage_after=item.stage,
+                      next_review_at=item.next_review_at, lesson=lesson)
+
+
 def answer(db: Session, ws: Workspace, body: AnswerIn, now: datetime) -> AnswerOut:
     item = db.scalar(select(Item).where(Item.id == body.item_id, Item.workspace_id == ws.id))
     if item is None:
@@ -178,32 +239,21 @@ def answer(db: Session, ws: Workspace, body: AnswerIn, now: datetime) -> AnswerO
                          your_answer="", stage_before=stage_before, stage_after=stage_before,
                          next_review_at=item.next_review_at)
 
+    if body.self_grade and item.kind != "grammar" and body.session_type != "practice":
+        raise ValueError("Only grammar and practice cards are graded by the user.")
+    if body.revealed and body.session_type != "practice":
+        raise Conflict("Show answer is only available in practice.")
     verdict, expected = q.check(item, body.direction, body.question_kind, body.answer, s.typo_tolerance,
                                 body.example_index)
-    lesson: LessonState | None = None
-
+    if body.self_grade:
+        verdict = Verdict(body.self_grade == "yes", True, None, 0, "self")
+    elif body.revealed:
+        verdict = Verdict(False, False, None, 0, "revealed")
+    if body.self_grade:  # remember the state so the user can change their mind after seeing the answer
+        event.undo_state = _snapshot(item)
+    lesson = _transition(item, body.session_type, body.direction, verdict.correct, now, s.intervals_hours)
     if body.session_type == "learn":
-        if item.stage is None:
-            item.stage, item.lesson_started_at = 0, now
-            stage_before = 0
-        if item.stage != 0:
-            raise Conflict("This item has already finished its lessons.")
-        o = srs.apply_lesson_answer(item.lesson_passes, item.lesson_directions, DIRS[body.direction],
-                                    verdict.correct, now, s.intervals_hours)
-        item.lesson_passes, item.lesson_directions = o.passes, o.directions_done
-        if o.graduated:
-            item.stage, item.next_review_at = 1, o.next_review_at
-        lesson = LessonState(
-            passes=o.passes,
-            directions_done=[n for n, f in DIRS.items() if srs.Direction(o.directions_done) & f],  # type: ignore[misc]
-            graduated=o.graduated,
-        )
-    elif body.session_type == "review":
-        if item.stage is None or item.stage < 1:
-            raise Conflict("This item is not in reviews yet.")
-        o = srs.apply_review(item.stage, verdict.correct, now, s.intervals_hours)
-        item.stage, item.next_review_at = o.stage_after, o.next_review_at
-    # practice: never touches SRS state
+        stage_before = 0 if stage_before is None else stage_before
 
     event.outcome = "correct" if verdict.correct else "wrong"
     event.note = verdict.note

@@ -1,7 +1,7 @@
 "use client";
 
 import { useId } from "react";
-import { KIND_CLASS, parseMarked } from "@/lib/format";
+import { KIND_CLASS, parseMarked, typeLabel } from "@/lib/format";
 import type { Distribution, Kind } from "@/lib/types";
 
 /** Seven cells filled up to the current stage. Not started and stage 0 show all cells empty. */
@@ -110,7 +110,8 @@ export function TypeChips({
   const all = value.length === 0;
   const toggle = (t: string) => {
     const next = value.includes(t) ? value.filter((x) => x !== t) : [...value, t];
-    onChange(next);
+    // Picking every type is the same as All.
+    onChange(next.length === types.length ? [] : next);
   };
   return (
     <div>
@@ -121,7 +122,7 @@ export function TypeChips({
         </button>
         {types.map((t) => (
           <button key={t} type="button" className="chip" aria-pressed={value.includes(t)} onClick={() => toggle(t)}>
-            {t}
+            {typeLabel(t)}
           </button>
         ))}
       </div>

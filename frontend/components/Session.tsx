@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ApiError, api, errorText, wsPath } from "@/lib/api";
 import { KIND_CLASS, KIND_LABEL, inTime, parseMarked } from "@/lib/format";
-import type { AcceptOut, AnswerOut, ItemOut, Question, SessionType, Settings } from "@/lib/types";
+import type { AcceptOut, AnswerOut, ItemOut, Question, RegradeOut, SessionType, Settings } from "@/lib/types";
 import { KindTag, SquareText, StageMeter } from "./bits";
 import { Loading } from "./Page";
 
@@ -12,11 +12,22 @@ export interface SessionStats {
   answered: number;
   correct: number;
   skipped: number;
+  /** Questions in the session when it started. */
+  total: number;
+  /** Questions answered correctly the first time they were shown. */
+  firstTry: number;
 }
 
 export interface SessionProps {
   lang: string;
   sessionType: SessionType;
+  /**
+   * Practice only. "line": a progress bar, and questions you miss come back until you clear them all.
+   * "test": one pass with a running score such as 3/10 right.
+   */
+  format?: "line" | "test";
+  /** Practice only: "typing" asks for typed answers; "cards" shows the answer on request and you say yes or no. */
+  mode?: "typing" | "cards";
   questions: Question[];
   settings: Settings;
   /** Called when the queue runs out; return more questions to keep going (lesson rounds). */
@@ -41,6 +52,10 @@ const BLANK = "＿＿＿";
 /** One runner for learn, review and practice: prompt, answer, verdict, next. */
 export function Session(props: SessionProps) {
   const { lang, sessionType, settings, fetchMore, onAnswer, onAccept, onFinish, onProgress } = props;
+  const mode = props.mode ?? "typing";
+  const format = props.format;
+  const [cleared, setCleared] = useState(0);
+  const seen = useRef(new Set<string>());
   const [queue, setQueue] = useState<Question[]>(props.questions);
   const [total, setTotal] = useState(props.questions.length);
   const [done, setDone] = useState(0);
@@ -50,11 +65,19 @@ export function Session(props: SessionProps) {
   const [result, setResult] = useState<AnswerOut | null>(null);
   const [accepted, setAccepted] = useState<AcceptOut | null>(null);
   const [accepting, setAccepting] = useState(false);
+  const [regrading, setRegrading] = useState(false);
+  const [shown, setShown] = useState(false); // cards: the answer has been revealed
   const [error, setError] = useState<string | null>(null);
   const [stuck, setStuck] = useState(false);
   const [moreError, setMoreError] = useState<string | null>(null);
   const [details, setDetails] = useState<Record<string, ItemOut>>(props.items ?? {});
-  const stats = useRef<SessionStats>({ answered: 0, correct: 0, skipped: 0 });
+  const stats = useRef<SessionStats>({
+    answered: 0,
+    correct: 0,
+    skipped: 0,
+    total: props.questions.length,
+    firstTry: 0,
+  });
   const shownAt = useRef(Date.now());
   const inputRef = useRef<HTMLInputElement>(null);
   const nextRef = useRef<HTMLButtonElement>(null);
@@ -88,6 +111,7 @@ export function Session(props: SessionProps) {
     setAnswer("");
     setResult(null);
     setAccepted(null);
+    setShown(false);
     setError(null);
     setStuck(false);
     setPhase("ask");
@@ -116,7 +140,12 @@ export function Session(props: SessionProps) {
   }, [fetchMore, onFinish, freshQuestion]);
 
   const advance = useCallback(() => {
-    const rest = queue.slice(1);
+    let rest = queue.slice(1);
+    if (format === "line" && result) {
+      // Finish line: a question is cleared once it is answered right; otherwise it comes back at the end.
+      if (accepted || result.correct) setCleared((c) => c + 1);
+      else rest = [...rest, queue[0]];
+    }
     if (rest.length > 0) {
       setQueue(rest);
       freshQuestion();
@@ -124,7 +153,46 @@ export function Session(props: SessionProps) {
     }
     setQueue([]);
     void loadMore();
-  }, [queue, freshQuestion, loadMore]);
+  }, [queue, format, result, accepted, freshQuestion, loadMore]);
+
+  const send = useCallback(
+    async (extra: Record<string, unknown>, typed = "") => {
+      if (!current || phase !== "ask") return;
+      setPhase("sending");
+      setError(null);
+      try {
+        const out = await api<AnswerOut>(wsPath(lang, "/answers"), {
+          method: "POST",
+          json: {
+            item_id: current.item_id,
+            session_type: sessionType,
+            direction: current.direction,
+            question_kind: current.question_kind,
+            answer: typed,
+            response_ms: Date.now() - shownAt.current,
+            example_index: current.example_index,
+            ...extra,
+          },
+        });
+        stats.current.answered += 1;
+        if (out.correct) stats.current.correct += 1;
+        const key = `${current.item_id}:${current.direction}:${current.example_index ?? ""}`;
+        if (!seen.current.has(key)) {
+          seen.current.add(key);
+          if (out.correct) stats.current.firstTry += 1;
+        }
+        setResult(out);
+        setDone((d) => d + 1);
+        setPhase("answered");
+        onAnswer?.(current, out);
+      } catch (e) {
+        setPhase("ask");
+        setError(errorText(e));
+        setStuck(e instanceof ApiError && (e.status === 409 || e.status === 404 || e.status === 422));
+      }
+    },
+    [current, phase, lang, sessionType, onAnswer],
+  );
 
   const check = useCallback(async () => {
     if (!current || phase !== "ask") return;
@@ -134,33 +202,8 @@ export function Session(props: SessionProps) {
       inputRef.current?.focus();
       return;
     }
-    setPhase("sending");
-    setError(null);
-    try {
-      const out = await api<AnswerOut>(wsPath(lang, "/answers"), {
-        method: "POST",
-        json: {
-          item_id: current.item_id,
-          session_type: sessionType,
-          direction: current.direction,
-          question_kind: current.question_kind,
-          answer: text,
-          response_ms: Date.now() - shownAt.current,
-          example_index: current.example_index,
-        },
-      });
-      stats.current.answered += 1;
-      if (out.correct) stats.current.correct += 1;
-      setResult(out);
-      setDone((d) => d + 1);
-      setPhase("answered");
-      onAnswer?.(current, out);
-    } catch (e) {
-      setPhase("ask");
-      setError(errorText(e));
-      setStuck(e instanceof ApiError && (e.status === 409 || e.status === 404 || e.status === 422));
-    }
-  }, [current, phase, answer, settings.skip_enabled, lang, sessionType, onAnswer]);
+    await send({}, text);
+  }, [current, phase, answer, settings.skip_enabled, send]);
 
   const skip = useCallback(async () => {
     if (!current || phase !== "ask" || !settings.skip_enabled) return;
@@ -194,6 +237,30 @@ export function Session(props: SessionProps) {
     advance();
   }, [advance, done]);
 
+  // "Bummer, I got it wrong" (or back to "Nailed it"): the user changes their mind after seeing the answer.
+  const regrade = useCallback(
+    async (correct: boolean) => {
+      if (!result || !current) return;
+      setRegrading(true);
+      setError(null);
+      try {
+        const out = await api<RegradeOut>(wsPath(lang, `/answers/${result.event_id}/regrade`), {
+          method: "POST",
+          json: { correct },
+        });
+        if (result.correct !== out.correct) stats.current.correct += out.correct ? 1 : -1;
+        const merged: AnswerOut = { ...result, ...out, note: "regraded" };
+        setResult(merged);
+        onAnswer?.(current, merged);
+      } catch (e) {
+        setError(errorText(e));
+      } finally {
+        setRegrading(false);
+      }
+    },
+    [result, current, lang, onAnswer],
+  );
+
   const accept = useCallback(async () => {
     if (!result || !current) return;
     setAccepting(true);
@@ -216,6 +283,9 @@ export function Session(props: SessionProps) {
     result !== null &&
     accepted === null &&
     !accepting &&
+    !regrading &&
+    result.note !== "self" &&
+    result.note !== "regraded" &&
     (settings.after_answer === "always_advance" || (settings.after_answer === "advance_if_correct" && result.correct));
   const advanceRef = useRef(advance);
   useEffect(() => {
@@ -247,9 +317,17 @@ export function Session(props: SessionProps) {
     return () => window.removeEventListener("keydown", onKey);
   }, [phase, advance, skip, settings.skip_enabled]);
 
-  const fill = props.progress ?? (total ? done / total : 0);
-  const label = props.label ? props.label({ done, total, current }) : `${done} / ${total}`;
+  let fill = props.progress ?? (total ? done / total : 0);
+  let label = props.label ? props.label({ done, total, current }) : `${done} / ${total}`;
+  if (format === "line") {
+    fill = total ? cleared / total : 0;
+    label = `${cleared} / ${total} cleared`;
+  } else if (format === "test") {
+    label = `${stats.current.correct}/${total} right`;
+  }
   const detail = current ? details[current.item_id] : undefined;
+  // Grammar answers are open-ended, so grammar is always graded by the user; practice can use cards for everything.
+  const cardStyle = !!current && (current.kind === "grammar" || (sessionType === "practice" && mode === "cards"));
 
   return (
     <>
@@ -295,7 +373,61 @@ export function Session(props: SessionProps) {
             <p className="dim hint-line">{current.prompt.hint}</p>
           )}
 
-          {phase !== "answered" && (
+          {phase !== "answered" && cardStyle && (
+            <>
+              <div className="row center">
+                {current.kind === "vocabulary" ? <span className="tag">{current.type}</span> : <KindTag kind={current.kind} />}
+                {current.question_kind === "cloze" && detail && <span className="tag">{detail.text}</span>}
+                <StageMeter stage={current.stage} />
+              </div>
+              {shown && detail && (
+                <div className="verdict reveal" role="status">
+                  <span className="tick">Answer.</span> <RevealedAnswer q={current} item={detail} />
+                </div>
+              )}
+              {error && (
+                <div className="alert" role="alert" style={{ maxWidth: 560 }}>
+                  {error}{" "}
+                  {stuck && (
+                    <button type="button" className="linkish" onClick={dropCurrent}>
+                      Move on to the next question
+                    </button>
+                  )}
+                </div>
+              )}
+              <div className="row center">
+                <button type="button" className="btn lg" disabled={phase === "sending"} onClick={() => void send({ self_grade: "yes" })}>
+                  Nailed it
+                </button>
+                {!shown && (
+                  <button
+                    type="button"
+                    className="btn quiet"
+                    disabled={phase === "sending" || !detail}
+                    onClick={() => setShown(true)}
+                    autoFocus
+                  >
+                    Show
+                  </button>
+                )}
+                <button type="button" className="btn quiet" disabled={phase === "sending"} onClick={() => void send({ self_grade: "no" })}>
+                  Bummer
+                </button>
+                {settings.skip_enabled && !shown && (
+                  <button type="button" className="btn quiet" onClick={() => void skip()} disabled={phase === "sending"}>
+                    Skip
+                  </button>
+                )}
+              </div>
+              <p className="hint hint-line">
+                {current.kind === "grammar"
+                  ? "Grammar answers are open, so you decide whether you knew it."
+                  : "Think of the answer first, then say whether you knew it."}
+              </p>
+            </>
+          )}
+
+          {phase !== "answered" && !cardStyle && (
             <>
               <div className="row center">
                 {current.kind === "vocabulary" ? <span className="tag">{current.type}</span> : <KindTag kind={current.kind} />}
@@ -352,6 +484,17 @@ export function Session(props: SessionProps) {
                   <button type="submit" className="btn lg" disabled={phase === "sending"}>
                     Check <span className="key">Enter</span>
                   </button>
+                  {sessionType === "practice" && (
+                    <button
+                      type="button"
+                      className="btn quiet"
+                      onClick={() => void send({ revealed: true })}
+                      disabled={phase === "sending"}
+                      title="Shows the answer and counts this question as not correct"
+                    >
+                      Show answer
+                    </button>
+                  )}
                   {settings.skip_enabled && (
                     <button type="button" className="btn quiet" onClick={() => void skip()} disabled={phase === "sending"}>
                       Skip
@@ -381,6 +524,17 @@ export function Session(props: SessionProps) {
                 <button ref={nextRef} type="button" className="btn lg" onClick={advance}>
                   Next <span className="key">Enter</span>
                 </button>
+                {(result.note === "self" || result.note === "regraded") && (
+                  <button
+                    type="button"
+                    className="btn quiet"
+                    disabled={regrading}
+                    onClick={() => void regrade(!result.correct)}
+                    title="Changes how this answer is counted"
+                  >
+                    {result.correct ? "Bummer, I got it wrong" : "Actually, I nailed it"}
+                  </button>
+                )}
                 {result.can_accept && !accepted && (
                   <button
                     type="button"
@@ -410,7 +564,7 @@ export function Session(props: SessionProps) {
 }
 
 function bandText(q: Question): string {
-  if (q.question_kind === "cloze") return "Grammar · fill in the blank (romaji or kana)";
+  if (q.question_kind === "cloze") return "Grammar · what fills the blank?";
   if (q.question_kind === "name_pattern") return "Grammar · what does the marked pattern mean?";
   const k = KIND_LABEL[q.kind];
   return q.direction === "to_meaning" ? `${k} · answer with the meaning` : `${k} · answer in Japanese (romaji or kana)`;
@@ -481,6 +635,43 @@ function PromptView({ q, detail }: { q: Question; detail?: ItemOut }) {
     <div className={`square text ${cls}`}>
       <b>{q.prompt.text}</b>
     </div>
+  );
+}
+
+/** The answer for a card, taken from the item details so nothing is sent before the user decides. */
+function RevealedAnswer({ q, item }: { q: Question; item: ItemOut }) {
+  const meanings = [item.primary_meaning, ...item.alt_meanings];
+  const d = item.details;
+  if (q.question_kind === "cloze") {
+    const m = d.examples && q.example_index !== null ? parseMarked(d.examples[q.example_index]?.ja ?? "") : null;
+    return (
+      <b className="jp-text" lang="ja">
+        {m?.target ?? "—"}
+      </b>
+    );
+  }
+  if (q.question_kind === "reading") {
+    if (item.kind === "kanji") {
+      return (
+        <b className="jp-text" lang="ja">
+          {[...(d.onyomi ?? []), ...(d.kunyomi ?? [])].join("、") || item.reading_kana}
+        </b>
+      );
+    }
+    return (
+      <>
+        <b className="jp-text" lang="ja">
+          {item.reading_kana}
+        </b>{" "}
+        ({item.romaji})
+      </>
+    );
+  }
+  return (
+    <>
+      <b>{meanings[0]}</b>
+      {meanings.length > 1 ? `; ${meanings.slice(1).join("; ")}` : ""}
+    </>
   );
 }
 
@@ -557,6 +748,27 @@ function Verdict({
       <div className="verdict ok" role="status">
         <span className="tick">Accepted.</span> &ldquo;{out.your_answer}&rdquo; now counts as a right answer for this item.{" "}
         {line}
+      </div>
+    );
+  }
+  if (out.note === "revealed") {
+    return (
+      <div className="verdict bad" role="status">
+        <span className="tick">Here is the answer.</span> <Expected q={q} out={out} />. Counted as not correct. {line}
+      </div>
+    );
+  }
+  if ((out.note === "self" || out.note === "regraded") && out.correct) {
+    return (
+      <div className="verdict ok" role="status">
+        <span className="tick">Nailed it.</span> The answer is <Expected q={q} out={out} />. {line}
+      </div>
+    );
+  }
+  if ((out.note === "self" || out.note === "regraded") && !out.correct) {
+    return (
+      <div className="verdict bad" role="status">
+        <span className="tick">Bummer.</span> The answer is <Expected q={q} out={out} />. {line}
       </div>
     );
   }

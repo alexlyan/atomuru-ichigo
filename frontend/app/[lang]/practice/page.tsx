@@ -43,7 +43,7 @@ function listJoin(parts: string[]): string {
 }
 
 function stagesText(stages: string[]): string {
-  if (!stages.length) return "that you have started";
+  if (!stages.length) return "in any stage";
   const parts: string[] = [];
   if (stages.includes("new")) parts.push("not started yet");
   const nums = stages.filter((s) => s !== "new").map(Number).sort((a, b) => a - b);
@@ -60,9 +60,14 @@ function Practice() {
   const search = useSearchParams();
   const app = useApp();
   const [types, setTypes] = useState<string[]>(() => (search.get("types") ?? "").split(",").filter(Boolean));
-  const [stages, setStages] = useState<string[]>(() =>
-    (search.get("stages") ?? "").split(",").filter((s) => (STAGE_KEYS as readonly string[]).includes(s)),
-  );
+  // Default stage is New. An empty list means All.
+  const [stages, setStages] = useState<string[]>(() => {
+    const fromUrl = search.get("stages");
+    if (fromUrl === null) return ["new"];
+    return fromUrl.split(",").filter((s) => (STAGE_KEYS as readonly string[]).includes(s));
+  });
+  const [format, setFormat] = useState<"line" | "test">(() => (search.get("format") === "test" ? "test" : "line"));
+  const [mode, setMode] = useState<"typing" | "cards">(() => (search.get("mode") === "cards" ? "cards" : "typing"));
   const [source, setSource] = useState(() => {
     const s = search.get("source") ?? "all";
     return SOURCES.some((x) => x.value === s) ? s : "all";
@@ -75,7 +80,8 @@ function Practice() {
 
   const filter = new URLSearchParams();
   if (types.length) filter.set("types", types.join(","));
-  if (stages.length) filter.set("stages", stages.join(","));
+  // "New" covers items not started yet and items still in lessons (stage 0).
+  if (stages.length) filter.set("stages", stages.flatMap((s) => (s === "new" ? ["new", "0"] : [s])).join(","));
   filter.set("source", source);
   const filterQuery = filter.toString();
 
@@ -121,7 +127,11 @@ function Practice() {
   };
 
   const onFinish = useCallback((stats: SessionStats) => setFinished(stats), []);
-  const toggleStage = (s: string) => setStages((cur) => (cur.includes(s) ? cur.filter((x) => x !== s) : [...cur, s]));
+  const toggleStage = (s: string) =>
+    setStages((cur) => {
+      const next = cur.includes(s) ? cur.filter((x) => x !== s) : [...cur, s];
+      return next.length === STAGE_KEYS.length ? [] : next; // every stage picked is the same as All
+    });
 
   const n = matching.data?.count;
   const typesText = types.length ? listJoin(types.map(typePlural)) : "items of every type";
@@ -133,6 +143,8 @@ function Practice() {
           key={round}
           lang={lang}
           sessionType="practice"
+          mode={mode}
+          format={format}
           questions={questions}
           settings={settings.data}
           onFinish={onFinish}
@@ -151,8 +163,11 @@ function Practice() {
         <div className="trial">
           <h2 style={{ fontSize: 28 }}>Practice done.</h2>
           <p className="lead dim" style={{ textAlign: "center" }}>
-            {finished.answered ? `${finished.correct} of ${finished.answered} correct.` : "No answers this time."} Stages
-            and review dates did not change.
+            {!finished.answered
+              ? "No answers this time."
+              : format === "line"
+                ? `${finished.firstTry} of ${finished.total} correct on the first try.`
+                : `${finished.correct} of ${finished.answered} correct.`}
           </p>
           <div className="row center">
             <button type="button" className="btn lg" onClick={() => void start()} disabled={starting} autoFocus>
@@ -179,10 +194,45 @@ function Practice() {
             Pick what to drill. Answers here are logged for you to see, but stages and review dates stay as they are.
           </p>
           <div className="box stack">
+            <div>
+              <label id="format-label">Session</label>
+              <div className="chips" role="radiogroup" aria-labelledby="format-label">
+                <button type="button" role="radio" aria-checked={format === "line"} className="chip" onClick={() => setFormat("line")}>
+                  Finish line
+                </button>
+                <button type="button" role="radio" aria-checked={format === "test"} className="chip" onClick={() => setFormat("test")}>
+                  Test
+                </button>
+              </div>
+              <div className="hint">
+                {format === "line"
+                  ? "A progress bar fills as you clear questions. Ones you miss come back until you get them right."
+                  : "One pass through the questions with a running score, like 3/10 right. Nothing comes back."}
+              </div>
+            </div>
+            <div>
+              <label id="mode-label">Mode</label>
+              <div className="chips" role="radiogroup" aria-labelledby="mode-label">
+                <button type="button" role="radio" aria-checked={mode === "typing"} className="chip" onClick={() => setMode("typing")}>
+                  Typing
+                </button>
+                <button type="button" role="radio" aria-checked={mode === "cards"} className="chip" onClick={() => setMode("cards")}>
+                  Cards
+                </button>
+              </div>
+              <div className="hint">
+                {mode === "typing"
+                  ? "Type each answer. Show answer reveals it if you do not know it. Grammar is always self-checked."
+                  : "See the question, think of the answer, then choose Nailed it, Show or Bummer."}
+              </div>
+            </div>
             {app.me && <TypeChips types={app.me.types} value={types} onChange={setTypes} />}
             <div>
               <label id="stage-label">Stage</label>
               <div className="chips" role="group" aria-labelledby="stage-label">
+                <button type="button" className="chip" aria-pressed={stages.length === 0} onClick={() => setStages([])}>
+                  All
+                </button>
                 {STAGE_KEYS.map((s) => (
                   <button
                     key={s}
@@ -195,7 +245,7 @@ function Practice() {
                   </button>
                 ))}
               </div>
-              <div className="hint">No stage picked means every item you have started.</div>
+              <div className="hint">New means words you have not learned yet, or are still learning in lessons.</div>
             </div>
             <div className="fieldset">
               <div>

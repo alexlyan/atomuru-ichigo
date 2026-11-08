@@ -7,7 +7,7 @@ from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
-from app.core.types import TYPES, WORD_TYPES, Kind
+from app.core.types import TYPE_GROUPS, TYPES, WORD_TYPES, Kind
 from app.models import Item, Language, User, Workspace
 from app.schemas import WorkspaceSettings
 
@@ -73,13 +73,16 @@ def due_count(db: Session, ws_id, now: datetime) -> int:
 
 
 def types_filter(types: list[str] | None):
-    """SQL condition for the single Types list (word types plus kanji and grammar)."""
+    """SQL condition for the Types list: groups (verb, noun, adjective, other, kanji, grammar).
+    Detailed word types such as i-adjective are still accepted, so old links keep working."""
     if not types or "all" in types:
         return None
-    unknown = [t for t in types if t not in TYPES]
+    unknown = [t for t in types if t not in TYPES and t not in WORD_TYPES]
     if unknown:
         raise ValueError(f"unknown types: {', '.join(unknown)}")
-    word_types = [t for t in types if t in WORD_TYPES]
+    word_types: list[str] = []
+    for t in types:
+        word_types.extend(TYPE_GROUPS.get(t, (t,) if t in WORD_TYPES else ()))
     kinds = [t for t in types if t in (Kind.kanji.value, Kind.grammar.value)]
     parts = []
     if word_types:

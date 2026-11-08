@@ -9,7 +9,7 @@ from sqlalchemy import select
 
 from app.api.deps import DB, RNG, TZ, WS, CurrentUser, csv_list
 from app.core import importer
-from app.core.types import TYPES, Kind
+from app.core.types import TYPES, WORD_TYPES, Kind
 from app.models import Language, Workspace
 from app.schemas import (
     AcceptOut,
@@ -19,6 +19,8 @@ from app.schemas import (
     ItemOut,
     ItemPatch,
     Question,
+    RegradeIn,
+    RegradeOut,
     WorkspaceSettings,
 )
 from app.services import imports as imp
@@ -56,6 +58,7 @@ def me(db: DB, user: CurrentUser):
             for lang in langs.values() if lang.code not in have
         ],
         "types": list(TYPES),
+        "word_types": list(WORD_TYPES),
     }
 
 
@@ -283,6 +286,17 @@ def post_answer(body: AnswerIn, ws: WS, db: DB):
         raise HTTPException(409, str(exc)) from exc
     except ValueError as exc:
         raise bad_request(exc) from exc
+
+
+@router.post("/w/{lang}/answers/{event_id}/regrade", response_model=RegradeOut)
+def regrade_answer(event_id: int, body: RegradeIn, ws: WS, db: DB):
+    """Change your mind about a card you graded yourself (Nailed it / Bummer)."""
+    try:
+        return study.regrade(db, ws, event_id, body.correct, utcnow())
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except study.Conflict as exc:
+        raise HTTPException(409, str(exc)) from exc
 
 
 @router.post("/w/{lang}/answers/{event_id}/accept", response_model=AcceptOut)

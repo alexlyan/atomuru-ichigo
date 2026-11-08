@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 
+from app.core.types import group_of
 from app.models import Item, ReviewEvent, Workspace
 from app.services.study import learned_today
 from app.services.workspaces import due_count, settings_of, start_of_day
@@ -119,13 +120,15 @@ def progress(db: Session, ws: Workspace, now: datetime, tz, days: int | None) ->
         select(func.coalesce(Item.word_type, Item.kind), func.count()).where(Item.workspace_id == ws.id)
         .group_by(func.coalesce(Item.word_type, Item.kind))
     ).all())
-    # vocabulary without a word type is shown as noun
-    if "vocabulary" in counts:
-        counts["noun"] = counts.get("noun", 0) + counts.pop("vocabulary")
+    folded: dict[str, int] = {}
+    for detailed, n in counts.items():  # "vocabulary" = vocabulary without a word type, counted as noun
+        g = group_of("noun" if detailed == "vocabulary" else detailed)
+        folded[g] = folded.get(g, 0) + n
+    counts = folded
 
     agg: dict[str, dict[str, list[int]]] = {}
     for item_type, session, direction, ok, n in rows:
-        a = agg.setdefault(item_type, {"review": [0, 0], "to_meaning": [0, 0], "to_japanese": [0, 0], "practice": [0, 0]})
+        a = agg.setdefault(group_of(item_type), {"review": [0, 0], "to_meaning": [0, 0], "to_japanese": [0, 0], "practice": [0, 0]})
         if session == "practice":
             a["practice"][0] += ok; a["practice"][1] += n
         else:

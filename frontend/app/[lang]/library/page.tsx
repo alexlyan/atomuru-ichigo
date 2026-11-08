@@ -7,6 +7,7 @@ import { useApp } from "@/components/AppShell";
 import { KindTag, StageMeter } from "@/components/bits";
 import { ErrorBox, Loading, Page } from "@/components/Page";
 import { useApi, wsPath } from "@/lib/api";
+import { typeLabel } from "@/lib/format";
 import type { ItemList, ItemSummary } from "@/lib/types";
 
 const TABS = [
@@ -115,7 +116,7 @@ function Library() {
           <option value="">Any type</option>
           {(me?.types ?? []).map((t) => (
             <option key={t} value={t}>
-              {t}
+              {typeLabel(t)}
             </option>
           ))}
         </select>

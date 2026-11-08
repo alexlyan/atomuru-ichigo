@@ -27,6 +27,7 @@ export interface Me {
   total_due: number;
   available_languages: AvailableLanguage[];
   types: string[];
+  word_types: string[];
 }
 
 export interface Settings {
@@ -169,6 +170,14 @@ export interface AnswerOut {
   next_review_at: string | null;
   lesson: LessonState | null;
   can_accept: boolean;
+}
+
+export interface RegradeOut {
+  correct: boolean;
+  stage_before: number | null;
+  stage_after: number | null;
+  next_review_at: string | null;
+  lesson: LessonState | null;
 }
 
 export interface AcceptOut {

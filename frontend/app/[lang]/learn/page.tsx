@@ -97,6 +97,11 @@ export default function LearnPage() {
     setPasses((p) => ({ ...p, [id]: 3 }));
   }, []);
 
+  const unmarkGraduated = useCallback((id: string) => {
+    if (!graduatedRef.current.delete(id)) return;
+    setGraduated([...graduatedRef.current]);
+  }, []);
+
   const finishBatch = useCallback(() => {
     setStage("batchDone");
     setIndex(0);
@@ -150,6 +155,7 @@ export default function LearnPage() {
             const lesson = out.lesson;
             setPasses((p) => ({ ...p, [question.item_id]: lesson.passes }));
             if (lesson.graduated) markGraduated(question.item_id);
+            else unmarkGraduated(question.item_id); // the user changed their mind about the last answer
           }}
           onAccept={(question, out) => {
             if ((out.stage_after ?? 0) >= 1) markGraduated(question.item_id);

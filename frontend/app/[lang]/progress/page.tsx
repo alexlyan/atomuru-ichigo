@@ -7,7 +7,7 @@ import { useApp } from "@/components/AppShell";
 import { StageDistribution } from "@/components/bits";
 import { ErrorBox, Loading, Page } from "@/components/Page";
 import { useApi, wsPath } from "@/lib/api";
-import { DIRECTION_LABEL, typePlural } from "@/lib/format";
+import { DIRECTION_LABEL, typeLabel, typePlural } from "@/lib/format";
 import type { Progress } from "@/lib/types";
 
 const PERIODS = [
@@ -100,7 +100,7 @@ export default function ProgressPage() {
                     {p.by_type.map((r) => (
                       <tr key={r.type}>
                         <td>
-                          <b>{r.type}</b>
+                          <b>{typeLabel(r.type)}</b>
                         </td>
                         <td className="n">{r.items}</td>
                         <td>

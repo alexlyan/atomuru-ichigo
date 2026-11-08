@@ -111,7 +111,7 @@ def test_practice_never_changes_stage(client):
     res = answer(client, qs[0], "wrong answer", "practice")
     assert not res["correct"] and res["stage_after"] == 2
     prog = client.get(f"{W}/progress").json()
-    row = next(r for r in prog["by_type"] if r["type"] == "i-adjective")
+    row = next(r for r in prog["by_type"] if r["type"] == "adjective")
     assert row["practice"] == 0 and row["review"] is None
 
 
@@ -191,3 +191,89 @@ def test_categories_and_prioritize(client):
     assert order == ["求", "難しい", "求める"]
     assert [i["text"] for i in client.get(f"{W}/items", params={"sort": "queue"}).json()["items"]] == order
     assert a["id"]
+
+
+def test_type_groups_filter_and_progress(client):
+    add(client, VERB); add(client, ADJ); add(client, GRAMMAR); add(client, KANJI)
+    add(client, {**ADJ, "text": "静か", "reading_kana": "しずか", "romaji": "shizuka", "word_type": "na-adjective"})
+    add(client, {**ADJ, "text": "もう", "reading_kana": "もう", "romaji": "mou", "word_type": "adverb"})
+    me = client.get("/api/me").json()
+    assert me["types"] == ["verb", "noun", "adjective", "other", "kanji", "grammar"]
+    assert "i-adjective" in me["word_types"]
+
+    def texts(types):
+        return sorted(i["text"] for i in client.get(f"{W}/items", params={"types": types}).json()["items"])
+
+    assert texts("adjective") == ["難しい", "静か"]  # i- and na-adjectives together
+    assert texts("other") == ["もう"]
+    assert texts("adjective,verb") == ["求める", "難しい", "静か"]
+    assert texts("i-adjective") == ["難しい"]  # detailed types still work in old links
+    rows = {r["type"]: r["items"] for r in client.get(f"{W}/progress").json()["by_type"]}
+    assert rows == {"adjective": 2, "verb": 1, "other": 1, "kanji": 1, "grammar": 1}
+
+
+def test_practice_cards_self_grade_and_reveal(client):
+    adj = add(client, ADJ)
+    set_item(adj["id"], stage=3, next_review_at=datetime.now(UTC) + timedelta(days=1))
+    base = {"item_id": adj["id"], "session_type": "practice", "direction": "to_meaning", "question_kind": "meaning"}
+    yes = client.post(f"{W}/answers", json={**base, "self_grade": "yes"}).json()
+    assert yes["correct"] and yes["stage_after"] == 3
+    no = client.post(f"{W}/answers", json={**base, "self_grade": "no"}).json()
+    assert not no["correct"] and no["expected"][0] == "difficult"
+    shown = client.post(f"{W}/answers", json={**base, "revealed": True}).json()
+    assert not shown["correct"] and shown["note"] == "revealed" and not shown["can_accept"]
+    # reviews of words stay typed: no self-grading, no reveal
+    assert client.post(f"{W}/answers", json={**base, "session_type": "review", "self_grade": "yes"}).status_code == 422
+    assert client.post(f"{W}/answers", json={**base, "session_type": "review", "revealed": True}).status_code == 409
+    # grammar may be self-graded in any session
+    g = add(client, GRAMMAR)
+    set_item(g["id"], stage=1, next_review_at=datetime.now(UTC) - timedelta(minutes=1))
+    r = client.post(f"{W}/answers", json={"item_id": g["id"], "session_type": "review", "direction": "to_meaning",
+                                           "question_kind": "name_pattern", "example_index": 0,
+                                           "self_grade": "yes"}).json()
+    assert r["correct"] and r["stage_after"] == 2
+
+
+def test_practice_without_stage_filter_includes_new_items(client):
+    add(client, VERB)
+    assert client.get(f"{W}/practice/count").json() == {"count": 1}
+    assert client.get(f"{W}/practice/count", params={"stages": "1,2"}).json() == {"count": 0}
+
+
+def test_regrade_self_graded_card(client):
+    g = add(client, GRAMMAR)
+    set_item(g["id"], stage=3, next_review_at=datetime.now(UTC) - timedelta(minutes=1))
+    body = {"item_id": g["id"], "session_type": "review", "direction": "to_meaning",
+            "question_kind": "name_pattern", "example_index": 0, "self_grade": "yes"}
+    r = client.post(f"{W}/answers", json=body).json()
+    assert r["correct"] and r["stage_after"] == 4
+    # "I was sure, but I was wrong": back to the old state, then the wrong-answer rule
+    out = client.post(f"{W}/answers/{r['event_id']}/regrade", json={"correct": False}).json()
+    assert out["stage_after"] == 2 and not out["correct"]
+    out = client.post(f"{W}/answers/{r['event_id']}/regrade", json={"correct": True}).json()
+    assert out["stage_after"] == 4
+    # typed answers and answers that were followed by another answer can't be regraded
+    r2 = client.post(f"{W}/answers", json=body).json()
+    assert client.post(f"{W}/answers/{r['event_id']}/regrade", json={"correct": False}).status_code == 409
+    assert client.post(f"{W}/answers/{r2['event_id']}/regrade", json={"correct": False}).status_code == 200
+
+
+def test_regrade_lesson_pass(client):
+    g = add(client, GRAMMAR)
+    client.post(f"{W}/learn/start", json={"item_ids": [g["id"]]})
+    base = {"item_id": g["id"], "session_type": "learn", "question_kind": "cloze", "example_index": 0, "self_grade": "yes"}
+    a = client.post(f"{W}/answers", json={**base, "direction": "to_japanese"}).json()
+    assert a["lesson"]["directions_done"] == ["to_japanese"]
+    out = client.post(f"{W}/answers/{a['event_id']}/regrade", json={"correct": False}).json()
+    assert out["lesson"]["directions_done"] == [] and out["lesson"]["passes"] == 0
+
+
+def test_regrade_practice_has_no_side_effects(client):
+    adj = add(client, ADJ)
+    set_item(adj["id"], stage=2, next_review_at=datetime.now(UTC) + timedelta(days=1))
+    base = {"item_id": adj["id"], "session_type": "practice", "direction": "to_meaning", "question_kind": "meaning"}
+    r = client.post(f"{W}/answers", json={**base, "self_grade": "yes"}).json()
+    out = client.post(f"{W}/answers/{r['event_id']}/regrade", json={"correct": False}).json()
+    assert out["stage_after"] == 2 and not out["correct"]
+    typed = client.post(f"{W}/answers", json={**base, "answer": "difficult"}).json()
+    assert client.post(f"{W}/answers/{typed['event_id']}/regrade", json={"correct": False}).status_code == 409

@@ -468,7 +468,7 @@ function ManualAdd({ lang }: { lang: string }) {
     }
   };
 
-  const wordTypes = (me?.types ?? []).filter((t) => t !== "kanji" && t !== "grammar");
+  const wordTypes = me?.word_types ?? [];
 
   return (
     <form

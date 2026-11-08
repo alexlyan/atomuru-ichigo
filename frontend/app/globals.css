@@ -384,3 +384,9 @@ input[type=text], input[type=number], input[type=search], select { height: 42px;
 
 /* The session answer box keeps its own larger size */
 input[type=text].answer { height: auto; }
+
+/* Cards mode: the revealed answer */
+.verdict.reveal { background: var(--indigo-wash); border-color: var(--indigo); color: var(--ink); }
+.verdict.reveal .tick { color: var(--indigo); }
+
+.chip[role="radio"][aria-checked="true"] { background: var(--ink); color: var(--paper); border-color: var(--ink); }

@@ -60,12 +60,24 @@ export function pct(n: number | null): string {
   return n === null ? "no data" : `${n}%`;
 }
 
-/** Type names as a group: "i-adjectives", "kanji", "grammar entries". */
+const TYPE_NAMES: Record<string, { one: string; many: string }> = {
+  verb: { one: "Verb", many: "Verbs" },
+  noun: { one: "Noun", many: "Nouns" },
+  adjective: { one: "Adjective", many: "Adjectives" },
+  other: { one: "Other word", many: "Other words" },
+  kanji: { one: "Kanji", many: "Kanji" },
+  grammar: { one: "Grammar entry", many: "Grammar" },
+};
+
+/** Label of an entry in the Types list: "Verbs", "Other words", "Grammar". */
+export function typeLabel(type: string): string {
+  return TYPE_NAMES[type]?.many ?? type;
+}
+
+/** Type names inside a sentence: "verbs", "other words", "grammar entries". */
 export function typePlural(type: string): string {
-  if (type === "kanji") return "kanji";
   if (type === "grammar") return "grammar entries";
-  if (type === "question-word") return "question words";
-  return `${type}s`;
+  return (TYPE_NAMES[type]?.many ?? `${type}s`).toLowerCase();
 }
 
 export const DIRECTION_LABEL: Record<string, string> = {

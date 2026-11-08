@@ -121,7 +121,7 @@ export default function CardPage() {
           <div className="trial">
             <h2 style={{ fontSize: 28 }}>Drill done.</h2>
             <p className="lead dim" style={{ textAlign: "center" }}>
-              {drillDone.correct} of {drillDone.answered} correct. The schedule did not change.
+              {drillDone.correct} of {drillDone.answered} correct.
             </p>
             <div className="row center">
               <button type="button" className="btn lg" onClick={startDrill} autoFocus>
@@ -194,7 +194,7 @@ export default function CardPage() {
           <ItemForm
             value={form}
             onChange={(patch) => setForm((f) => (f ? { ...f, ...patch } : f))}
-            wordTypes={me?.types.filter((t) => t !== "kanji" && t !== "grammar") ?? WORD_TYPES_FALLBACK}
+            wordTypes={me?.word_types ?? WORD_TYPES_FALLBACK}
           />
           {formWarnings(form).map((w) => (
             <p key={w} className="hint" style={{ margin: 0 }}>

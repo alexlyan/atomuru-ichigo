@@ -138,6 +138,7 @@ class ReviewEvent(Base):
     response_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     item_type: Mapped[str] = mapped_column(String(32))  # snapshot, so later edits don't rewrite history
     categories: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list)
+    undo_state: Mapped[dict | None] = mapped_column(JSONB, nullable=True)  # item state before a self-graded answer
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
